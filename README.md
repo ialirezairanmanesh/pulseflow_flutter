@@ -1,9 +1,10 @@
 # pulseflow_flutter
 
-App-side probes for [PulseFlow](../docs/pulseflow). Registers `ext.pulseflow.*` service
-extensions and exposes accurate runtime signals to the dashboard.
+App-side probes for [PulseFlow](https://github.com/ialirezairanmanesh/PulseFlow).
+Registers `ext.pulseflow.*` service extensions and exposes accurate runtime signals
+to the dashboard.
 
-## What it adds over the old single-file stub
+## What it adds
 
 - **Accurate frame timings** via `SchedulerBinding.addTimingsCallback` — real build/raster/vsync
   durations, not estimates.
@@ -20,6 +21,15 @@ extensions and exposes accurate runtime signals to the dashboard.
 ```yaml
 dependencies:
   pulseflow_flutter:
+    git:
+      url: https://github.com/ialirezairanmanesh/pulseflow_flutter.git
+```
+
+Local development against a sibling clone:
+
+```yaml
+dependencies:
+  pulseflow_flutter:
     path: ../pulseflow_flutter
 ```
 
@@ -32,7 +42,8 @@ void main() {
 }
 ```
 
-Options: `appPackage`, `captureFrames`, `captureNetwork`, `trackLeaks`.
+Options: `appPackage`, `captureFrames`, `captureNetwork`, `trackLeaks`, `trackErrors`,
+`trackImages`.
 
 ## RPCs
 
@@ -48,8 +59,6 @@ Options: `appPackage`, `captureFrames`, `captureNetwork`, `trackLeaks`.
 | `injectInvoices` / `spikeCpu` / `allocateMemory` | Stress actions |
 | `listScenarios` / `runScenario` / `stopScenario` | Repeatable lab scenarios |
 
-Options: `appPackage`, `captureFrames`, `captureNetwork`, `trackLeaks`, `trackErrors`, `trackImages`.
-
 Notes: the widget probe, source locations, leak signals, and scenarios require debug/profile
 builds. HTTP capture works in all modes but adds a thin wrapper around `HttpClient`.
 
@@ -59,13 +68,9 @@ builds. HTTP capture works in all modes but adds a thin wrapper around `HttpClie
 lib/
   pulseflow_flutter.dart              public API (registerPulseFlow)
   src/rpc/service_extension_registry.dart
-  src/probes/frame_probe.dart
-  src/probes/rebuild_probe.dart
-  src/probes/widget_source.dart
-  src/probes/network_probe.dart
-  src/probes/leak_probe.dart
-  src/device/display_info.dart
-  src/scenarios/{builtin_scenarios,scenario_runner}.dart
+  src/probes/…
+  src/device/…
+  src/scenarios/…
   src/state/stress_state.dart
 example/                              minimal app
 test/                                 unit tests
@@ -77,3 +82,8 @@ test/                                 unit tests
 flutter test
 flutter analyze
 ```
+
+## Dashboard + bridge
+
+This package is the app-side half of PulseFlow. The Next.js dashboard and Dart bridge live in
+the [PulseFlow](https://github.com/ialirezairanmanesh/PulseFlow) repository.
