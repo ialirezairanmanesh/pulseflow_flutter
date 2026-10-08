@@ -91,7 +91,7 @@ class NetworkProbe {
       NetworkSample(
         id: 'http-${++_seq}',
         method: method,
-        uri: uri.toString(),
+        uri: redactUri(uri),
         latencyMs: double.parse(latencyMs.toStringAsFixed(1)),
         requestBytes: requestBytes < 0 ? 0 : requestBytes,
         responseBytes: responseBytes < 0 ? 0 : responseBytes,
@@ -103,6 +103,47 @@ class NetworkProbe {
       _buffer.removeFirst();
     }
   }
+}
+
+/// Query / user-info keys whose values are replaced with `***` in captured URIs.
+const Set<String> kRedactedUriKeys = <String>{
+  'token',
+  'access_token',
+  'refresh_token',
+  'id_token',
+  'auth',
+  'authorization',
+  'api_key',
+  'apikey',
+  'key',
+  'password',
+  'passwd',
+  'secret',
+  'client_secret',
+  'session',
+  'sessionid',
+  'sid',
+};
+
+/// Returns [uri] as a string with sensitive query params and user-info redacted.
+String redactUri(Uri uri) {
+  Uri cleaned = uri;
+  if (uri.userInfo.isNotEmpty) {
+    cleaned = uri.replace(userInfo: '***');
+  }
+  if (cleaned.queryParameters.isEmpty) return cleaned.toString();
+  final Map<String, String> params = Map<String, String>.of(
+    cleaned.queryParameters,
+  );
+  var changed = false;
+  for (final String key in params.keys.toList()) {
+    if (kRedactedUriKeys.contains(key.toLowerCase())) {
+      params[key] = '***';
+      changed = true;
+    }
+  }
+  if (!changed) return cleaned.toString();
+  return cleaned.replace(queryParameters: params).toString();
 }
 
 class _PulseFlowHttpOverrides extends HttpOverrides {

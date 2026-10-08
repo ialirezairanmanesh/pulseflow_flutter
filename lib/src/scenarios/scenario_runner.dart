@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 import 'dart:math';
 
 import 'package:flutter/foundation.dart' show kReleaseMode;
@@ -6,8 +7,9 @@ import 'package:flutter/scheduler.dart';
 import 'package:flutter/widgets.dart';
 
 import '../state/stress_state.dart';
+import 'scenario_registry.dart';
 
-/// Runs the built-in repeatable scenarios against the live widget tree.
+/// Runs the built-in and custom repeatable scenarios against the live widget tree.
 class ScenarioRunner {
   ScenarioRunner._();
 
@@ -56,13 +58,26 @@ class ScenarioRunner {
         case 'networkBurst':
           return await _networkBurst(params, sw);
         default:
-          return <String, Object?>{'ok': false, 'id': id, 'reason': 'Unknown scenario'};
+          if (ScenarioRegistry.instance.contains(id)) {
+            await ScenarioRegistry.instance.run(
+              id,
+              params,
+              shouldStop: () => stopRequested,
+            );
+            break;
+          }
+          return <String, Object?>{
+            'ok': false,
+            'id': id,
+            'reason': 'Unknown scenario',
+          };
       }
       return <String, Object?>{
         'ok': true,
         'id': id,
         'durationMs': sw.elapsedMilliseconds,
         'stopped': stopRequested,
+        if (ScenarioRegistry.instance.contains(id)) 'custom': true,
       };
     } finally {
       runningId = null;
@@ -200,23 +215,58 @@ class ScenarioRunner {
   ) async {
     final Future<void> Function(Map<String, String>)? hook =
         PulseFlowStressState.instance.onNetworkBurst;
-    if (hook == null) {
-      runningId = null;
+    if (hook != null) {
+      await hook(params);
       return <String, Object?>{
         'ok': true,
         'id': 'networkBurst',
-        'stubbed': true,
+        'stubbed': false,
+        'via': 'hook',
         'durationMs': sw.elapsedMilliseconds,
-        'message':
-            'No network hook — set PulseFlowStressState.instance.onNetworkBurst',
+        'stopped': stopRequested,
       };
     }
-    await hook(params);
+
+    final String url = params['url'] ?? 'https://example.com/';
+    final int count = int.tryParse(params['count'] ?? '') ?? 12;
+    final int concurrency = int.tryParse(params['concurrency'] ?? '') ?? 4;
+    var completed = 0;
+    var failures = 0;
+    var next = 0;
+
+    Future<void> worker() async {
+      while (!stopRequested) {
+        final int i = next++;
+        if (i >= count) return;
+        final HttpClient client = HttpClient();
+        try {
+          final HttpClientRequest request =
+              await client.getUrl(Uri.parse(url));
+          final HttpClientResponse response = await request.close();
+          await response.drain<void>();
+          completed += 1;
+        } catch (_) {
+          failures += 1;
+        } finally {
+          client.close(force: true);
+        }
+      }
+    }
+
+    final int workers = concurrency.clamp(1, count);
+    await Future.wait(List<Future<void>>.generate(workers, (_) => worker()));
+
     return <String, Object?>{
       'ok': true,
       'id': 'networkBurst',
       'stubbed': false,
+      'via': 'http',
+      'url': url,
+      'requested': count,
+      'completed': completed,
+      'failures': failures,
       'durationMs': sw.elapsedMilliseconds,
+      'stopped': stopRequested,
     };
   }
 }

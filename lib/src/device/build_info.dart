@@ -23,5 +23,7 @@ Map<String, bool> probeAvailability() {
     'errors': notRelease,
     'images': notRelease,
     'leaks': kFlutterMemoryAllocationsEnabled,
+    'stalls': notRelease,
+    'deviceContext': true,
   };
 }

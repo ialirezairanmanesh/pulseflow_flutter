@@ -4,14 +4,16 @@ import 'dart:math';
 import 'package:flutter/foundation.dart' show kReleaseMode;
 
 import 'device/build_info.dart';
+import 'device/device_context.dart';
 import 'probes/error_probe.dart';
 import 'probes/frame_probe.dart';
 import 'probes/image_probe.dart';
 import 'probes/leak_probe.dart';
 import 'probes/network_probe.dart';
 import 'probes/rebuild_probe.dart';
+import 'probes/stall_probe.dart';
 import 'rpc/service_extension_registry.dart';
-import 'scenarios/builtin_scenarios.dart';
+import 'scenarios/scenario_registry.dart';
 import 'scenarios/scenario_runner.dart';
 import 'state/stress_state.dart';
 
@@ -38,6 +40,7 @@ bool get isPulseFlowRegistered => _registered;
 /// - [captureFrames]: capture engine frame timings (recommended).
 /// - [captureNetwork]: install the `HttpOverrides` network capture.
 /// - [trackLeaks]: subscribe to `FlutterMemoryAllocations` (debug builds).
+/// - [trackStalls]: detect main-isolate freezes above [stallThreshold].
 void registerPulseFlow({
   String? appPackage,
   bool captureFrames = true,
@@ -45,11 +48,18 @@ void registerPulseFlow({
   bool trackLeaks = true,
   bool trackErrors = true,
   bool trackImages = true,
+  bool trackStalls = true,
+  Duration stallThreshold = const Duration(milliseconds: 250),
+  DeviceContextEnricher? deviceEnricher,
 }) {
   if (captureFrames) {
     FrameProbe.instance.start();
   }
   RebuildProbe.instance.appPackage = appPackage;
+  DeviceContext.instance.appPackage = appPackage;
+  if (deviceEnricher != null) {
+    DeviceContext.instance.enricher = deviceEnricher;
+  }
   if (captureNetwork) {
     NetworkProbe.instance.install();
   }
@@ -62,6 +72,10 @@ void registerPulseFlow({
   }
   if (trackImages) {
     ImageProbe.instance.start();
+  }
+  if (trackStalls) {
+    StallProbe.instance.routeProvider = () => RebuildProbe.instance.lastRoute;
+    StallProbe.instance.start(threshold: stallThreshold);
   }
   if (_registered) return;
   _registered = true;
@@ -78,6 +92,28 @@ void _registerExtensions() {
       'buildMode': currentBuildMode(),
       'probes': probeAvailability(),
     };
+  });
+
+  // --- Device / runtime context ---
+  registerPulseExtension('ext.pulseflow.getDeviceContext', (
+    Map<String, String> params,
+  ) async {
+    return DeviceContext.instance.snapshot();
+  });
+
+  // --- UI stall / freeze ---
+  registerPulseExtension('ext.pulseflow.getStallReport', (
+    Map<String, String> params,
+  ) {
+    return StallProbe.instance.report(limit: intParam(params, 'limit', 40));
+  });
+
+  registerPulseExtension('ext.pulseflow.resetStallProbe', (
+    Map<String, String> params,
+  ) {
+    if (kReleaseMode) return _releaseOnly('Stall probe');
+    StallProbe.instance.reset();
+    return <String, Object?>{'ok': true, 'reset': true};
   });
 
   // --- Widget rebuild probe ---
@@ -209,7 +245,10 @@ void _registerExtensions() {
   ) {
     return <String, Object?>{
       'ok': true,
-      'scenarios': builtinScenarios.map((ScenarioInfo s) => s.toJson()).toList(),
+      'scenarios': ScenarioRegistry.instance
+          .listAll()
+          .map((s) => s.toJson())
+          .toList(),
     };
   });
 

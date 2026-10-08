@@ -47,6 +47,7 @@ const List<ScenarioInfo> builtinScenarios = <ScenarioInfo>[
   ScenarioInfo(
     id: 'networkBurst',
     label: 'Network burst',
-    description: 'Stubbed unless the app registers a network hook',
+    description:
+        'Fire parallel HTTP GETs (url/count params) or an app onNetworkBurst hook',
   ),
 ];
