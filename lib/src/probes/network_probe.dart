@@ -127,23 +127,45 @@ const Set<String> kRedactedUriKeys = <String>{
 
 /// Returns [uri] as a string with sensitive query params and user-info redacted.
 String redactUri(Uri uri) {
-  Uri cleaned = uri;
-  if (uri.userInfo.isNotEmpty) {
-    cleaned = uri.replace(userInfo: '***');
+  final bool redactUser = uri.userInfo.isNotEmpty;
+  if (uri.queryParameters.isEmpty) {
+    if (!redactUser) return uri.toString();
+    return uri.replace(userInfo: '***').toString();
   }
-  if (cleaned.queryParameters.isEmpty) return cleaned.toString();
-  final Map<String, String> params = Map<String, String>.of(
-    cleaned.queryParameters,
-  );
+
+  final List<String> parts = <String>[];
   var changed = false;
-  for (final String key in params.keys.toList()) {
+  uri.queryParameters.forEach((String key, String value) {
     if (kRedactedUriKeys.contains(key.toLowerCase())) {
-      params[key] = '***';
+      parts.add('$key=***');
       changed = true;
+    } else {
+      parts.add(
+        '${Uri.encodeQueryComponent(key)}=${Uri.encodeQueryComponent(value)}',
+      );
     }
+  });
+  if (!changed && !redactUser) return uri.toString();
+
+  final String authority = redactUser
+      ? '***@${uri.host}${uri.hasPort ? ':${uri.port}' : ''}'
+      : uri.authority;
+  final StringBuffer out = StringBuffer()
+    ..write(uri.scheme)
+    ..write('://')
+    ..write(authority)
+    ..write(uri.path);
+  if (parts.isNotEmpty) {
+    out
+      ..write('?')
+      ..write(parts.join('&'));
   }
-  if (!changed) return cleaned.toString();
-  return cleaned.replace(queryParameters: params).toString();
+  if (uri.fragment.isNotEmpty) {
+    out
+      ..write('#')
+      ..write(uri.fragment);
+  }
+  return out.toString();
 }
 
 class _PulseFlowHttpOverrides extends HttpOverrides {
