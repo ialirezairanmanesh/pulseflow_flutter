@@ -413,6 +413,85 @@ class RebuildProbe {
     }
   }
 
+  String _aggregateKey(String route, String name, String? keyLabel) =>
+      '$route|$name|${keyLabel ?? ''}';
+
+  /// Walk the mounted element tree for [route], merging rebuild counters.
+  /// Nodes stay present while mounted — not only while rebuilding.
+  List<Map<String, dynamic>> _walkRouteTree({
+    required String route,
+    required DateTime now,
+    required double windowSec,
+    required Map<String, WidgetEntry> rebuildByKey,
+    int maxNodes = 500,
+  }) {
+    final Element? root = WidgetsBinding.instance.rootElement;
+    if (root == null) return <Map<String, dynamic>>[];
+
+    final List<Map<String, dynamic>> nodes = <Map<String, dynamic>>[];
+    var totalWindowForShare = 0;
+    for (final WidgetEntry e in rebuildByKey.values) {
+      if (e.route == route) totalWindowForShare += e.hits.length;
+    }
+
+    void visit(Element el, String? parentId, int depth, bool underRoute) {
+      if (nodes.length >= maxNodes) return;
+      final String name = el.widget.runtimeType.toString();
+      final String? keyLabel = _keyLabel(el.widget.key);
+      final String elRoute = resolveRouteLabel(el);
+      final bool onRoute = elRoute == route;
+      final bool include = underRoute || onRoute;
+
+      String? nodeId;
+      if (include) {
+        nodeId = 'n${identityHashCode(el)}';
+        final String aggKey = _aggregateKey(route, name, keyLabel);
+        final WidgetEntry? entry = rebuildByKey[aggKey];
+        final int windowCount = entry?.hits.length ?? 0;
+        final int session = entry?.session ?? 0;
+        final int lastSeenRaw =
+            entry == null ? 0 : now.difference(entry.lastSeen).inMilliseconds;
+        final int lastSeenMs = lastSeenRaw < 0 ? 0 : lastSeenRaw;
+        final int depthForNode = underRoute ? depth : 0;
+        nodes.add(<String, dynamic>{
+          'id': nodeId,
+          'name': name,
+          'route': route,
+          if (keyLabel != null) 'keyLabel': keyLabel,
+          if (parentId != null) 'parentId': parentId,
+          'depth': depthForNode,
+          'inTree': true,
+          if (entry?.sourceFile != null) 'sourceUri': entry!.sourceFile,
+          if (entry?.sourceLine != null) 'sourceLine': entry!.sourceLine,
+          'rebuildsSession': session,
+          'rebuildsWindow': windowCount,
+          'ratePerSec': windowCount > 0
+              ? double.parse((windowCount / windowSec).toStringAsFixed(2))
+              : 0.0,
+          'share': totalWindowForShare > 0
+              ? double.parse(
+                  ((windowCount / totalWindowForShare) * 100).toStringAsFixed(1),
+                )
+              : 0.0,
+          'lastSeenMs': lastSeenMs,
+          'isFramework': isFrameworkWidgetName(name),
+        });
+      }
+
+      final bool nextUnder = underRoute || onRoute;
+      final int nextDepth = nextUnder ? (underRoute ? depth + 1 : 1) : depth;
+      final String? nextParent = include ? nodeId : parentId;
+      el.visitChildren((Element child) {
+        visit(child, nextParent, nextDepth, nextUnder);
+      });
+    }
+
+    root.visitChildren((Element child) {
+      visit(child, null, 0, false);
+    });
+    return nodes;
+  }
+
   Map<String, Object?> snapshot({int limit = 40}) {
     final DateTime now = DateTime.now();
     final DateTime cutoff = now.subtract(const Duration(milliseconds: _windowMs));
@@ -421,6 +500,23 @@ class RebuildProbe {
     }
 
     const double windowSec = _windowMs / 1000.0;
+    final String? liveRoute = detectLiveRoute();
+    if (liveRoute != null) lastRoute = liveRoute;
+
+    final Map<String, WidgetEntry> rebuildByKey =
+        Map<String, WidgetEntry>.from(entries);
+
+    List<Map<String, dynamic>> tree = <Map<String, dynamic>>[];
+    if (lastRoute != null && lastRoute!.isNotEmpty) {
+      tree = _walkRouteTree(
+        route: lastRoute!,
+        now: now,
+        windowSec: windowSec,
+        rebuildByKey: rebuildByKey,
+        maxNodes: limit < 100 ? 500 : limit,
+      );
+    }
+
     final List<Map<String, dynamic>> widgetMaps = <Map<String, dynamic>>[];
     int totalWindow = 0;
     int totalSession = 0;
@@ -444,6 +540,7 @@ class RebuildProbe {
             : 0.0,
         'lastSeenMs': lastSeenMs < 0 ? 0 : lastSeenMs,
         'isFramework': isFrameworkWidgetName(entry.name),
+        'inTree': false,
       });
     }
 
@@ -466,9 +563,12 @@ class RebuildProbe {
       },
     ).toList();
 
+    // UI primary list: mounted tree when available, else hot rebuild ranks.
+    final List<Map<String, dynamic>> primary = tree.isNotEmpty ? tree : top;
+
     final Map<String, List<Map<String, dynamic>>> byRoute =
         <String, List<Map<String, dynamic>>>{};
-    for (final Map<String, dynamic> w in top) {
+    for (final Map<String, dynamic> w in primary) {
       final String route = w['route'] as String;
       byRoute.putIfAbsent(route, () => <Map<String, dynamic>>[]).add(w);
     }
@@ -491,7 +591,10 @@ class RebuildProbe {
                   ((rebuildsWindow / totalWindow) * 100).toStringAsFixed(1),
                 )
               : 0.0,
-          'topWidgets': routeWidgets.take(5).toList(),
+          'topWidgets': routeWidgets
+              .where((Map<String, dynamic> w) => (w['rebuildsWindow'] as int) > 0)
+              .take(5)
+              .toList(),
         };
       },
     ).toList()
@@ -509,7 +612,8 @@ class RebuildProbe {
       'totalRebuildsSession': totalSession,
       'totalRebuilds': totalWindow,
       'currentRoute': lastRoute,
-      'widgets': top,
+      'widgets': primary,
+      'tree': tree,
       'screens': screens,
     };
   }

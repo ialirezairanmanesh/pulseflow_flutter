@@ -129,3 +129,38 @@ String resolveRouteLabel(Element element) {
 
   return kUnnamedRoute;
 }
+
+/// Live Navigator/Router location without needing a recent rebuild.
+///
+/// Prefers a specific modal name, then a Router URI path (not bare `/`).
+/// Deeper tree hits overwrite shallow `/` home routes.
+String? detectLiveRoute() {
+  try {
+    final Element? root = WidgetsBinding.instance.rootElement;
+    if (root == null) return null;
+
+    final List<String> modals = <String>[];
+    final List<String> routers = <String>[];
+    void visitor(Element el) {
+      final String? named = _namedFromModal(el);
+      if (named != null && named.isNotEmpty) modals.add(named);
+      final String? path = _locationFromRouter(el);
+      if (path != null && path.isNotEmpty) routers.add(path);
+      el.visitChildren(visitor);
+    }
+
+    root.visitChildren(visitor);
+
+    String? pick(List<String> values) {
+      if (values.isEmpty) return null;
+      for (var i = values.length - 1; i >= 0; i--) {
+        if (values[i] != '/') return values[i];
+      }
+      return values.last;
+    }
+
+    return pick(modals) ?? pick(routers);
+  } catch (_) {
+    return null;
+  }
+}

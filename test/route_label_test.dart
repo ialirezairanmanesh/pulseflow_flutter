@@ -96,6 +96,32 @@ void main() {
     final Element text = tester.element(find.text('probe'));
     expect(resolveRouteLabel(text), '/reports');
   });
+
+  testWidgets('detectLiveRoute reads the current modal route', (WidgetTester tester) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Builder(
+          builder: (BuildContext context) {
+            return TextButton(
+              onPressed: () {
+                Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                    settings: const RouteSettings(name: '/invoices'),
+                    builder: (_) => const InvoicePage(),
+                  ),
+                );
+              },
+              child: const Text('go'),
+            );
+          },
+        ),
+      ),
+    );
+    await tester.tap(find.text('go'));
+    await tester.pumpAndSettle();
+
+    expect(detectLiveRoute(), '/invoices');
+  });
 }
 
 class _PathParser extends RouteInformationParser<String> {

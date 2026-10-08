@@ -4,33 +4,11 @@ App-side probes for [PulseFlow](https://github.com/ialirezairanmanesh/PulseFlow)
 Registers `ext.pulseflow.*` service extensions and exposes accurate runtime signals
 to the dashboard.
 
-## What it adds
-
-- **Accurate frame timings** via `SchedulerBinding.addTimingsCallback` — real build/raster/vsync
-  durations, not estimates.
-- **Refresh-rate-aware budget** from the active display (`1000 / refreshRate`), so 90/120 Hz
-  devices are judged correctly.
-- **Widget source locations** (`file:line`) for heavy rebuilds, resolved through the widget
-  inspector (debug/profile).
-- **HTTP capture** via a delegating `HttpOverrides` — covers `package:http` and Dio's IO adapter
-  without the VM Service HTTP profiler.
-- **Leak signals** from `FlutterMemoryAllocations` (outstanding created-not-disposed objects).
-
-## Usage
+## Install
 
 ```yaml
 dependencies:
-  pulseflow_flutter:
-    git:
-      url: https://github.com/ialirezairanmanesh/pulseflow_flutter.git
-```
-
-Local development against a sibling clone:
-
-```yaml
-dependencies:
-  pulseflow_flutter:
-    path: ../pulseflow_flutter
+  pulseflow_flutter: ^0.1.0
 ```
 
 ```dart
@@ -44,6 +22,22 @@ void main() {
 
 Options: `appPackage`, `captureFrames`, `captureNetwork`, `trackLeaks`, `trackErrors`,
 `trackImages`.
+
+Run your app in **debug** or **profile** mode, then connect from the PulseFlow
+dashboard. Widget probe, source locations, leak signals, and scenarios require
+debug/profile builds. HTTP capture works in all modes but wraps `HttpClient`.
+
+## What it adds
+
+- **Accurate frame timings** via `SchedulerBinding.addTimingsCallback` — real build/raster/vsync
+  durations, not estimates.
+- **Refresh-rate-aware budget** from the active display (`1000 / refreshRate`), so 90/120 Hz
+  devices are judged correctly.
+- **Widget source locations** (`file:line`) for heavy rebuilds, resolved through the widget
+  inspector (debug/profile).
+- **HTTP capture** via a delegating `HttpOverrides` — covers `package:http` and Dio's IO adapter
+  without the VM Service HTTP profiler.
+- **Leak signals** from `FlutterMemoryAllocations` (outstanding created-not-disposed objects).
 
 ## RPCs
 
@@ -59,24 +53,24 @@ Options: `appPackage`, `captureFrames`, `captureNetwork`, `trackLeaks`, `trackEr
 | `injectInvoices` / `spikeCpu` / `allocateMemory` | Stress actions |
 | `listScenarios` / `runScenario` / `stopScenario` | Repeatable lab scenarios |
 
-Notes: the widget probe, source locations, leak signals, and scenarios require debug/profile
-builds. HTTP capture works in all modes but adds a thin wrapper around `HttpClient`.
+## Development
 
-## Layout
+Against a sibling clone of this repo (or PulseFlow's `make test-flutter`):
 
-```
-lib/
-  pulseflow_flutter.dart              public API (registerPulseFlow)
-  src/rpc/service_extension_registry.dart
-  src/probes/…
-  src/device/…
-  src/scenarios/…
-  src/state/stress_state.dart
-example/                              minimal app
-test/                                 unit tests
+```yaml
+dependencies:
+  pulseflow_flutter:
+    path: ../pulseflow_flutter
 ```
 
-## Test
+Or from git:
+
+```yaml
+dependencies:
+  pulseflow_flutter:
+    git:
+      url: https://github.com/ialirezairanmanesh/pulseflow_flutter.git
+```
 
 ```bash
 flutter test

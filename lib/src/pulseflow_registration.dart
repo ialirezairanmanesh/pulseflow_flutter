@@ -120,7 +120,7 @@ void _registerExtensions() {
   ) {
     if (kReleaseMode) return _releaseOnly('Widget probe');
     if (!RebuildProbe.instance.active) RebuildProbe.instance.start();
-    return RebuildProbe.instance.snapshot(limit: intParam(params, 'limit', 40));
+    return RebuildProbe.instance.snapshot(limit: intParam(params, 'limit', 500));
   });
 
   registerPulseExtension('ext.pulseflow.getRebuildCauses', (
