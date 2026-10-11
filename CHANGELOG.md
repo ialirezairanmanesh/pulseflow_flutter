@@ -1,3 +1,10 @@
+## 0.2.2
+
+- Remove the `injectInvoices` demo extension/stress action (use the `listFlood`
+  scenario and `PulseFlowStressState.invoices` instead).
+- README: document the PulseFlow MCP server (`pulseflow-mcp` on npm) so a coding
+  agent can read the live session directly.
+
 ## 0.2.1
 
 - README: drop insecure `http://` markdown links so pub points stay at 160.

@@ -10,6 +10,10 @@ Without this package the dashboard can still show Build/Raster/memory/CPU via th
 Service. With it you unlock Widgets, richer Problems tips, Network capture, Leaks,
 Stalls, Scenarios, device context, and accurate engine frame timings.
 
+> Prefer working from your coding agent (Cursor, Claude Code, Command Code)? PulseFlow
+> ships an MCP server so the agent can read the session directly — see
+> [Use it from your coding agent (MCP)](#use-it-from-your-coding-agent-mcp).
+
 ---
 
 ## How PulseFlow fits together
@@ -25,8 +29,10 @@ PulseFlow dashboard (browser) ◄── WebSocket ──► Dart bridge
 | **This package** (`pulseflow_flutter`) | In-app probes + service extensions |
 | **Dart bridge** | Proxies the browser to the Dart VM Service (browsers cannot open arbitrary `ws://` targets reliably) |
 | **Dashboard** | Problems-first UI: ranked issues, frames, CPU, memory, network, report |
+| **MCP server** (optional) | Lets your coding agent read the live session directly (Cursor / Claude / Command Code) |
 
-You need all three for the full experience.
+You need the first three for the full experience; the MCP server is optional and
+lives in the PulseFlow repo.
 
 ---
 
@@ -237,7 +243,6 @@ Do not reuse built-in ids (`scrollStorm`, `routeThrash`, …).
 
 ### Stress RPCs (from the dashboard)
 
-- `injectInvoices` — append demo invoices (`count`)
 - `spikeCpu` — busy-loop (`millis`)
 - `allocateMemory` — retain buffers (`megabytes`)
 
@@ -261,7 +266,7 @@ All names are under `ext.pulseflow.*`. The dashboard / bridge call these for you
 | `getLeakReport` | Outstanding objects by class |
 | `getErrors` | Overflow / assertion / exception signatures |
 | `getImageStats` | Image cache + oversized decodes |
-| `injectInvoices` / `spikeCpu` / `allocateMemory` | Stress |
+| `spikeCpu` / `allocateMemory` | Stress |
 | `listScenarios` / `runScenario` / `stopScenario` | Built-in + custom lab scenarios |
 
 ---
@@ -297,6 +302,70 @@ Profile is still the right mode for CPU flamegraphs and more realistic frames.
 7. Fix → Record again → compare on **Report** / **History**.
 
 Optional CI: the PulseFlow repo ships `pulseflow_check` (budget gate on P95 build / jank).
+
+---
+
+## Use it from your coding agent (MCP)
+
+PulseFlow ships a local [Model Context Protocol](https://modelcontextprotocol.io)
+server, so an agent that speaks MCP — **Cursor**, **Claude Code**, **Command Code** —
+can read the live session for you: rank the problems, explain each one, and propose
+fixes, using the same ranking as the **Problems** page. It proxies the same bridge,
+so you run nothing extra beyond PulseFlow itself.
+
+You still need the **PulseFlow bridge** running. Clone the repo and start it (the first
+run installs the Node and Dart dependencies):
+
+```bash
+git clone https://github.com/ialirezairanmanesh/PulseFlow.git
+cd PulseFlow
+make run          # Dart bridge on :3847 (+ dashboard on :3846)
+```
+
+Only the **bridge** matters for the MCP; the dashboard UI is optional and you can ignore
+its browser tab. (Later, `make bridge` starts just the bridge once the dependencies are
+installed.)
+
+### Register the MCP server
+
+The server is published on npm as **`pulseflow-mcp`**, so there is nothing to install —
+your MCP client runs it with `npx`.
+
+**Cursor** — `.cursor/mcp.json` in your project, or `~/.cursor/mcp.json` to use it everywhere:
+
+```json
+{
+  "mcpServers": {
+    "pulseflow": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "pulseflow-mcp"]
+    }
+  }
+}
+```
+
+**Command Code** — `cmd mcp add pulseflow -- npx -y pulseflow-mcp`.
+**Claude Code / other MCP clients** — the same `mcpServers` entry. Restart the client (or
+toggle the server) after adding it.
+
+Developing from a checkout instead? Point the command at `<repo>/docs/pulseflow/mcp/run.sh`.
+
+### Ask the agent
+
+Connect to your app first — `pulseflow_connect` (or pass `{"mock": true}` for a
+device-free demo). Then ask in plain language, e.g.:
+
+> What are the top performance problems right now, and what should I fix first?
+
+The agent calls `pulseflow_report` / `pulseflow_problems` and answers with the ranked
+issues and concrete fixes. Edit the code, re-measure, repeat.
+
+Tools: session `pulseflow_status`, `pulseflow_discover`, `pulseflow_connect`,
+`pulseflow_disconnect`; findings `pulseflow_report`, `pulseflow_problems`,
+`pulseflow_widgets`, `pulseflow_frames`, `pulseflow_cpu`, `pulseflow_memory`,
+`pulseflow_network`, `pulseflow_device`, `pulseflow_errors`, `pulseflow_logs`;
+controls `pulseflow_debug_option`, `pulseflow_hot_widgets`.
 
 ---
 
