@@ -1,3 +1,11 @@
+## 0.2.4
+
+- Cut the profiler's own main-isolate cost (it was inflating the very CPU/stall
+  numbers PulseFlow reports): `isUsefulScreenName` no longer compiles a RegExp
+  per ancestor, route labels are cached per frame, the mounted-tree walk no
+  longer re-resolves the route for every node, and `detectLiveRoute` skips the
+  Router walk when a modal route name exists.
+
 ## 0.2.3
 
 - Rebuild roots now carry `file:line` — source resolution no longer skips private
