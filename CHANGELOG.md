@@ -1,3 +1,12 @@
+## 0.2.3
+
+- Rebuild roots now carry `file:line` — source resolution no longer skips private
+  app widgets (only real framework shells and `*Transition`).
+- Detect builders that rebuild their reusable `child` (`AnimatedBuilder`,
+  `ListenableBuilder`, `ValueListenableBuilder`) via `childProvided` /
+  `childReused` on the widget stats.
+- Fix `resetWidgetProbe` leaving the probe frozen (a reset now resumes recording).
+
 ## 0.2.2
 
 - Remove the `injectInvoices` demo extension/stress action (use the `listFlood`
