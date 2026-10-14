@@ -7,6 +7,12 @@ import 'route_label.dart';
 import 'widget_source.dart';
 
 const int _windowMs = 10000;
+const int _routeCacheCap = 2000;
+const int _snapshotCacheMs = 250;
+/// Soft cap once inside the target route (finding the route is uncapped).
+const int _walkBudgetUs = 5000;
+/// Skip the mounted-tree walk when the last flush already cost this much.
+const int _skipWalkAfterFlushUs = 2000;
 
 const Set<String> _frameworkWidgets = <String>{
   'Text',
@@ -175,8 +181,19 @@ class _AttrWindow {
   final List<DateTime> hits = <DateTime>[];
 }
 
+class _WalkResult {
+  _WalkResult(this.nodes, {required this.partial});
+
+  final List<Map<String, dynamic>> nodes;
+  final bool partial;
+}
+
 /// Samples dirty-widget rebuilds via [debugOnRebuildDirtyWidget] and resolves
 /// the app source location of each widget on first sight.
+///
+/// The rebuild callback itself is O(1) (identity-set insert). Route/id/source
+/// work runs in a post-frame flush so it does not inflate
+/// [FrameTiming.buildDuration].
 class RebuildProbe {
   RebuildProbe._();
 
@@ -197,18 +214,28 @@ class RebuildProbe {
   RebuildDirtyWidgetCallback? _previous;
   final Map<String, WidgetEntry> entries = <String, WidgetEntry>{};
   final HashMap<Element, _FrameNode> _frameNodes = HashMap<Element, _FrameNode>.identity();
+  /// Dirty elements observed during build — drained in [_flushFrame].
+  final HashSet<Element> _pending = HashSet<Element>.identity();
   bool _frameScheduled = false;
   final Map<String, _RootWindow> _roots = <String, _RootWindow>{};
   final Map<String, _AttrWindow> _attributed = <String, _AttrWindow>{};
 
-  /// Per-frame cache of route labels. `resolveRouteLabel` walks ancestors (and
-  /// matches a RegExp per ancestor), so recomputing it for every rebuilt widget
-  /// and every tree node was the profiler's biggest self-inflicted cost.
+  /// Durable route-label cache. `resolveRouteLabel` walks ancestors, so we keep
+  /// entries across frames/polls and only clear on overflow / stop / reset.
   final HashMap<Element, String> _routeCache = HashMap<Element, String>.identity();
+
+  bool _dirtySinceSnapshot = false;
+  DateTime? _lastSnapshotAt;
+  Map<String, Object?>? _lastSnapshot;
+  int _lastFlushOverheadUs = 0;
+  int _lastSnapshotOverheadUs = 0;
 
   String _routeOf(Element element) {
     final String? cached = _routeCache[element];
     if (cached != null) return cached;
+    if (_routeCache.length >= _routeCacheCap) {
+      _routeCache.clear();
+    }
     return _routeCache[element] = resolveRouteLabel(element);
   }
 
@@ -217,10 +244,13 @@ class RebuildProbe {
     active = true;
     frozen = false;
     _frameNodes.clear();
+    _pending.clear();
     _previous = debugOnRebuildDirtyWidget;
+    // O(1) during build — never touch strings / routes / DateTime here.
     debugOnRebuildDirtyWidget = (Element element, bool builtOnce) {
       _previous?.call(element, builtOnce);
-      _record(element);
+      _pending.add(element);
+      _scheduleFrame();
     };
   }
 
@@ -232,9 +262,15 @@ class RebuildProbe {
     frozen = false;
     entries.clear();
     _frameNodes.clear();
+    _pending.clear();
     _roots.clear();
     _attributed.clear();
     _routeCache.clear();
+    _lastSnapshot = null;
+    _lastSnapshotAt = null;
+    _dirtySinceSnapshot = false;
+    _lastFlushOverheadUs = 0;
+    _lastSnapshotOverheadUs = 0;
   }
 
   void reset() {
@@ -243,9 +279,15 @@ class RebuildProbe {
     frozen = false;
     entries.clear();
     _frameNodes.clear();
+    _pending.clear();
     _roots.clear();
     _attributed.clear();
     _routeCache.clear();
+    _lastSnapshot = null;
+    _lastSnapshotAt = null;
+    _dirtySinceSnapshot = true;
+    _lastFlushOverheadUs = 0;
+    _lastSnapshotOverheadUs = 0;
   }
 
   void setFrozen(bool value) {
@@ -261,7 +303,8 @@ class RebuildProbe {
     return key.toString();
   }
 
-  void _record(Element element) {
+  /// Full bookkeeping — must run post-frame, not inside the rebuild callback.
+  void _record(Element element, {bool schedule = true}) {
     final String name = element.widget.runtimeType.toString();
     final String? keyLabel = _keyLabel(element.widget.key);
     final String route = _routeOf(element);
@@ -291,6 +334,7 @@ class RebuildProbe {
     }
     entry.session += 1;
     entry.lastSeen = now;
+    _dirtySinceSnapshot = true;
     if (!frozen) {
       entry.hits.add(now);
       _frameNodes[element] = _FrameNode(
@@ -300,7 +344,7 @@ class RebuildProbe {
         sourceUri: entry.sourceFile,
         sourceLine: entry.sourceLine,
       );
-      _scheduleFrame();
+      if (schedule) _scheduleFrame();
     }
   }
 
@@ -314,8 +358,19 @@ class RebuildProbe {
   }
 
   void _flushFrame() {
-    if (_frameNodes.isEmpty) return;
+    final Stopwatch sw = Stopwatch()..start();
     try {
+      final List<Element> pending = _pending.toList(growable: false);
+      _pending.clear();
+      for (final Element element in pending) {
+        try {
+          _record(element, schedule: false);
+        } catch (_) {
+          // Element may already be defunct by flush time.
+        }
+      }
+      if (_frameNodes.isEmpty) return;
+
       final List<Element> elements = _frameNodes.keys.toList();
       final HashMap<Element, int> index = HashMap<Element, int>.identity();
       for (var i = 0; i < elements.length; i++) {
@@ -376,7 +431,9 @@ class RebuildProbe {
       }
     } finally {
       _frameNodes.clear();
-      _routeCache.clear();
+      // Do NOT clear _routeCache here — durable across frames (P1).
+      sw.stop();
+      _lastFlushOverheadUs = sw.elapsedMicroseconds;
     }
   }
 
@@ -510,8 +567,8 @@ class RebuildProbe {
       '$route|$name|${keyLabel ?? ''}';
 
   /// Walk the mounted element tree for [route], merging rebuild counters.
-  /// Nodes stay present while mounted — not only while rebuilding.
-  List<Map<String, dynamic>> _walkRouteTree({
+  /// Soft-stops after [_walkBudgetUs] so a large tree cannot freeze the isolate.
+  _WalkResult _walkRouteTree({
     required String route,
     required DateTime now,
     required double windowSec,
@@ -519,16 +576,31 @@ class RebuildProbe {
     int maxNodes = 500,
   }) {
     final Element? root = WidgetsBinding.instance.rootElement;
-    if (root == null) return <Map<String, dynamic>>[];
+    if (root == null) {
+      return _WalkResult(<Map<String, dynamic>>[], partial: false);
+    }
 
     final List<Map<String, dynamic>> nodes = <Map<String, dynamic>>[];
     var totalWindowForShare = 0;
     for (final WidgetEntry e in rebuildByKey.values) {
       if (e.route == route) totalWindowForShare += e.hits.length;
     }
+    var partial = false;
+    // Time spent finding the route is uncapped; budget starts on first under-route visit.
+    Stopwatch? underWatch;
 
     void visit(Element el, String? parentId, int depth, bool underRoute) {
-      if (nodes.length >= maxNodes) return;
+      if (nodes.length >= maxNodes) {
+        partial = true;
+        return;
+      }
+      if (underRoute) {
+        underWatch ??= Stopwatch()..start();
+        if (underWatch!.elapsedMicroseconds >= _walkBudgetUs) {
+          partial = true;
+          return;
+        }
+      }
       final String name = el.widget.runtimeType.toString();
       final String? keyLabel = _keyLabel(el.widget.key);
       // Once we are inside the target subtree every descendant is on-route, so
@@ -574,24 +646,35 @@ class RebuildProbe {
         });
       }
 
+      if (partial) return;
+
       final bool nextUnder = onRoute;
       final int nextDepth = nextUnder ? (underRoute ? depth + 1 : 1) : depth;
       final String? nextParent = include ? nodeId : parentId;
       el.visitChildren((Element child) {
-        visit(child, nextParent, nextDepth, nextUnder);
+        if (!partial) visit(child, nextParent, nextDepth, nextUnder);
       });
     }
 
     root.visitChildren((Element child) {
-      visit(child, null, 0, false);
+      if (!partial) visit(child, null, 0, false);
     });
-    return nodes;
+    return _WalkResult(nodes, partial: partial);
   }
 
   Map<String, Object?> snapshot({int limit = 40}) {
     final DateTime now = DateTime.now();
+
+    // P2: reuse a fresh idle snapshot instead of re-walking the tree.
+    if (!_dirtySinceSnapshot &&
+        _lastSnapshot != null &&
+        _lastSnapshotAt != null &&
+        now.difference(_lastSnapshotAt!).inMilliseconds < _snapshotCacheMs) {
+      return Map<String, Object?>.from(_lastSnapshot!);
+    }
+
+    final Stopwatch sw = Stopwatch()..start();
     final DateTime cutoff = now.subtract(const Duration(milliseconds: _windowMs));
-    _routeCache.clear();
     if (!frozen) {
       _pruneWindow(cutoff);
     }
@@ -604,14 +687,20 @@ class RebuildProbe {
         Map<String, WidgetEntry>.from(entries);
 
     List<Map<String, dynamic>> tree = <Map<String, dynamic>>[];
-    if (lastRoute != null && lastRoute!.isNotEmpty) {
-      tree = _walkRouteTree(
+    var partial = false;
+    final bool skipWalk = _lastFlushOverheadUs >= _skipWalkAfterFlushUs;
+    if (!skipWalk && lastRoute != null && lastRoute!.isNotEmpty) {
+      final _WalkResult walked = _walkRouteTree(
         route: lastRoute!,
         now: now,
         windowSec: windowSec,
         rebuildByKey: rebuildByKey,
         maxNodes: limit < 100 ? 500 : limit,
       );
+      tree = walked.nodes;
+      partial = walked.partial;
+    } else if (skipWalk) {
+      partial = true;
     }
 
     final List<Map<String, dynamic>> widgetMaps = <Map<String, dynamic>>[];
@@ -702,7 +791,11 @@ class RebuildProbe {
             (b['rebuildsWindow'] as int).compareTo(a['rebuildsWindow'] as int),
       );
 
-    return <String, Object?>{
+    sw.stop();
+    _lastSnapshotOverheadUs = sw.elapsedMicroseconds;
+    final int probeOverheadUs = _lastFlushOverheadUs + _lastSnapshotOverheadUs;
+
+    final Map<String, Object?> payload = <String, Object?>{
       'ok': true,
       'active': active,
       'frozen': frozen,
@@ -714,6 +807,15 @@ class RebuildProbe {
       'widgets': primary,
       'tree': tree,
       'screens': screens,
+      'partial': partial,
+      'probeOverheadUs': probeOverheadUs,
+      'probeFlushOverheadUs': _lastFlushOverheadUs,
+      'probeSnapshotOverheadUs': _lastSnapshotOverheadUs,
     };
+
+    _lastSnapshot = payload;
+    _lastSnapshotAt = now;
+    _dirtySinceSnapshot = false;
+    return payload;
   }
 }

@@ -131,4 +131,71 @@ void main() {
     expect(entry!.childProvided, isTrue);
     expect(entry.childReused, isFalse);
   });
+
+  testWidgets('snapshot reports probeOverheadUs after a flush', (WidgetTester tester) async {
+    final ValueNotifier<int> notifier = ValueNotifier<int>(0);
+    addTearDown(notifier.dispose);
+
+    await tester.pumpWidget(
+      Directionality(
+        textDirection: TextDirection.ltr,
+        child: ValueListenableBuilder<int>(
+          valueListenable: notifier,
+          builder: (BuildContext context, int value, Widget? child) =>
+              Text('$value', textDirection: TextDirection.ltr),
+        ),
+      ),
+    );
+
+    RebuildProbe.instance.start();
+    notifier.value = 1;
+    await tester.pump();
+
+    final Map<String, Object?> snap = RebuildProbe.instance.snapshot(limit: 40);
+    expect(snap['probeOverheadUs'], isA<int>());
+    expect(snap['probeFlushOverheadUs'], isA<int>());
+    expect(snap['probeSnapshotOverheadUs'], isA<int>());
+    expect(snap.containsKey('partial'), isTrue);
+  });
+
+  testWidgets('idle snapshot is reused within 250ms', (WidgetTester tester) async {
+    await tester.pumpWidget(
+      const Directionality(
+        textDirection: TextDirection.ltr,
+        child: Text('idle', textDirection: TextDirection.ltr),
+      ),
+    );
+    RebuildProbe.instance.start();
+    await tester.pump();
+
+    final Map<String, Object?> first = RebuildProbe.instance.snapshot(limit: 40);
+    final Map<String, Object?> second = RebuildProbe.instance.snapshot(limit: 40);
+    expect(identical(second['widgets'], first['widgets']), isTrue);
+    expect(second['probeOverheadUs'], first['probeOverheadUs']);
+  });
+
+  testWidgets('deferred record still counts rebuilds after post-frame', (
+    WidgetTester tester,
+  ) async {
+    final ValueNotifier<int> notifier = ValueNotifier<int>(0);
+    addTearDown(notifier.dispose);
+
+    await tester.pumpWidget(
+      Directionality(
+        textDirection: TextDirection.ltr,
+        child: ValueListenableBuilder<int>(
+          valueListenable: notifier,
+          builder: (BuildContext context, int value, Widget? child) =>
+              Text('$value', textDirection: TextDirection.ltr),
+        ),
+      ),
+    );
+
+    RebuildProbe.instance.start();
+    // Before the post-frame flush, entries should still be empty.
+    notifier.value = 1;
+    expect(findEntry('ValueListenableBuilder'), isNull);
+    await tester.pump();
+    expect(findEntry('ValueListenableBuilder'), isNotNull);
+  });
 }

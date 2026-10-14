@@ -1,3 +1,15 @@
+## 0.2.5
+
+- RebuildProbe no longer inflates `FrameTiming.buildDuration`: the rebuild
+  callback only inserts into an identity set; route/id/source work runs in the
+  post-frame flush.
+- Keep the route-label cache across frames/polls (cap 2000) instead of clearing
+  it on every flush/snapshot.
+- Cache idle snapshots for 250ms; budget the mounted-tree walk at 5ms once
+  inside the target route (`partial: true` when truncated); expose `probeOverheadUs` /
+  `probeFlushOverheadUs` / `probeSnapshotOverheadUs`; skip the tree walk when
+  the last flush was already expensive.
+
 ## 0.2.4
 
 - Cut the profiler's own main-isolate cost (it was inflating the very CPU/stall
