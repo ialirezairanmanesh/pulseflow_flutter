@@ -1,7 +1,6 @@
-import 'dart:async';
 import 'dart:collection';
 
-import 'package:flutter/foundation.dart' show kReleaseMode;
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:flutter/scheduler.dart';
 
 /// One detected main-isolate stall (UI freeze).
@@ -11,6 +10,7 @@ class StallEvent {
     required this.durationMs,
     required this.atMs,
     this.route,
+    this.kind,
   });
 
   final String id;
@@ -18,26 +18,35 @@ class StallEvent {
   final int atMs;
   final String? route;
 
+  /// `vsync` = blocked before build started; `build` = blocked during build.
+  final String? kind;
+
   Map<String, Object?> toJson() => <String, Object?>{
         'id': id,
         'durationMs': durationMs,
         'atMs': atMs,
         if (route != null) 'route': route,
+        if (kind != null) 'kind': kind,
       };
 }
 
-/// Detects main-isolate freezes by watching gaps between UI-timer ticks.
+/// Detects main-isolate freezes from [FrameTiming] of frames that were
+/// actually scheduled.
 ///
-/// When the UI isolate is blocked, [Timer] callbacks are delayed; the gap
-/// since the previous tick is the stall duration. Default threshold is 250 ms.
+/// A stall is recorded when, for a delivered frame:
+/// - [FrameTiming.vsyncOverhead] ≥ threshold (isolate busy after vsync before
+///   build could start), or
+/// - [FrameTiming.buildDuration] ≥ threshold (isolate blocked during build).
+///
+/// Quiet periods with **no scheduled frame** (static screens, 1 Hz clocks) are
+/// idleness — never stalls. This replaces the old `Timer.periodic` gap detector,
+/// which fired whenever the engine parked the UI isolate between frames.
 class StallProbe {
   StallProbe._();
 
   static final StallProbe instance = StallProbe._();
 
   final Queue<StallEvent> _events = Queue<StallEvent>();
-  Timer? _timer;
-  DateTime? _lastTick;
   bool _active = false;
   int _seq = 0;
   Duration threshold = const Duration(milliseconds: 250);
@@ -46,55 +55,63 @@ class StallProbe {
   bool get active => _active;
 
   void start({Duration? threshold}) {
-    if (kReleaseMode) return;
     if (threshold != null) this.threshold = threshold;
     if (_active) return;
     _active = true;
-    _lastTick = DateTime.now();
-    _timer = Timer.periodic(const Duration(milliseconds: 50), _onTick);
+    SchedulerBinding.instance.addTimingsCallback(_onTimings);
   }
 
   void stop() {
-    _timer?.cancel();
-    _timer = null;
+    if (!_active) return;
+    SchedulerBinding.instance.removeTimingsCallback(_onTimings);
     _active = false;
-    _lastTick = null;
   }
 
   void reset() {
     _events.clear();
     _seq = 0;
-    _lastTick = DateTime.now();
   }
 
-  void _onTick(Timer timer) {
-    final DateTime now = DateTime.now();
-    final DateTime? previous = _lastTick;
-    _lastTick = now;
-    if (previous == null) return;
-    final Duration gap = now.difference(previous);
-    // Subtract the nominal period so a healthy 50 ms tick is not a stall.
-    final Duration excess = gap - const Duration(milliseconds: 50);
-    if (excess < threshold) return;
-    _events.addLast(
-      StallEvent(
-        id: 'stall-${++_seq}',
-        durationMs: double.parse(
-          (excess.inMicroseconds / 1000.0).toStringAsFixed(1),
+  void _onTimings(List<FrameTiming> timings) {
+    final double thresholdMs = threshold.inMilliseconds.toDouble();
+    final int nowMs = DateTime.now().millisecondsSinceEpoch;
+    for (final FrameTiming timing in timings) {
+      final double vsyncMs = timing.vsyncOverhead.inMicroseconds / 1000.0;
+      final double buildMs = timing.buildDuration.inMicroseconds / 1000.0;
+
+      String? kind;
+      double stallMs = 0;
+      if (vsyncMs >= thresholdMs && vsyncMs >= buildMs) {
+        kind = 'vsync';
+        stallMs = vsyncMs;
+      } else if (buildMs >= thresholdMs) {
+        kind = 'build';
+        stallMs = buildMs;
+      } else {
+        continue;
+      }
+
+      _events.addLast(
+        StallEvent(
+          id: 'stall-${++_seq}',
+          durationMs: double.parse(stallMs.toStringAsFixed(1)),
+          atMs: nowMs,
+          route: routeProvider?.call(),
+          kind: kind,
         ),
-        atMs: now.millisecondsSinceEpoch,
-        route: routeProvider?.call(),
-      ),
-    );
-    while (_events.length > 100) {
-      _events.removeFirst();
+      );
+      while (_events.length > 100) {
+        _events.removeFirst();
+      }
     }
   }
 
-  /// Test hook: record a synthetic stall without waiting on the timer.
+  /// Test hook: record a synthetic stall without waiting on the engine.
+  @visibleForTesting
   void debugRecordStall({
     required double durationMs,
     String? route,
+    String kind = 'build',
   }) {
     _events.addLast(
       StallEvent(
@@ -102,18 +119,16 @@ class StallProbe {
         durationMs: durationMs,
         atMs: DateTime.now().millisecondsSinceEpoch,
         route: route,
+        kind: kind,
       ),
     );
   }
 
+  /// Test hook: feed engine timings directly.
+  @visibleForTesting
+  void debugAddTimings(List<FrameTiming> timings) => _onTimings(timings);
+
   Map<String, Object?> report({int limit = 40}) {
-    if (kReleaseMode) {
-      return <String, Object?>{
-        'ok': false,
-        'available': false,
-        'reason': 'Stall probe is only available in debug/profile builds',
-      };
-    }
     final List<StallEvent> all = _events.toList();
     final List<StallEvent> recent =
         all.length <= limit ? all : all.sublist(all.length - limit);
@@ -129,6 +144,7 @@ class StallProbe {
       'thresholdMs': threshold.inMilliseconds,
       'total': all.length,
       'maxDurationMs': maxMs,
+      'detector': 'frameTiming',
       'framePhase': SchedulerBinding.instance.schedulerPhase.name,
       'stalls': recent.map((StallEvent e) => e.toJson()).toList(),
     };

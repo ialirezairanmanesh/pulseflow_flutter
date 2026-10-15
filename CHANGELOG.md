@@ -1,3 +1,13 @@
+## 0.2.6
+
+- StallProbe no longer treats idle gaps (1 Hz clocks, static screens) as
+  freezes. Stalls come only from [FrameTiming]: `vsyncOverhead` or
+  `buildDuration` ≥ threshold on a frame that was actually scheduled. Works in
+  release too.
+- FrameProbe drops a 3s warmup, exposes `p95Session` / `p95Recent`, and marks
+  jank as `jankInconclusive` when recent fps < 10 or frames are not back-to-back
+  (so 1 fps idle cannot report 100% jank).
+
 ## 0.2.5
 
 - RebuildProbe no longer inflates `FrameTiming.buildDuration`: the rebuild

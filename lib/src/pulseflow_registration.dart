@@ -111,7 +111,6 @@ void _registerExtensions() {
   registerPulseExtension('ext.pulseflow.resetStallProbe', (
     Map<String, String> params,
   ) {
-    if (kReleaseMode) return _releaseOnly('Stall probe');
     StallProbe.instance.reset();
     return <String, Object?>{'ok': true, 'reset': true};
   });

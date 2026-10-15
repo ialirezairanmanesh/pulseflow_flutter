@@ -23,7 +23,8 @@ Map<String, bool> probeAvailability() {
     'errors': notRelease,
     'images': notRelease,
     'leaks': kFlutterMemoryAllocationsEnabled,
-    'stalls': notRelease,
+    // FrameTiming-based; works in debug/profile/release.
+    'stalls': true,
     'deviceContext': true,
   };
 }
